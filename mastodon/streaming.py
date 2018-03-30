@@ -5,6 +5,7 @@ https://github.com/tootsuite/mastodon/blob/master/docs/Using-the-API/Streaming-A
 
 import json
 import six
+import requests
 from mastodon import Mastodon
 from mastodon.Mastodon import MastodonMalformedEventError
 
@@ -28,6 +29,11 @@ class StreamListener(object):
         """A status has been deleted. status_id is the status' integer ID."""
         pass
 
+    def on_close(self):
+        """The HTTP chunked transfer connection has been closed. Allow the
+        client application to deal with this as it sees fit."""
+        pass
+
     def handle_heartbeat(self):
         """The server has sent us a keep-alive message. This callback may be
         useful to carry out periodic housekeeping tasks, or just to confirm
@@ -43,24 +49,31 @@ class StreamListener(object):
         """
         event = {}
         line_buffer = bytearray()
-        for chunk in response.iter_content(chunk_size = 1):
-            if chunk:
-                if chunk == b'\n':
-                    try:
-                        line = line_buffer.decode('utf-8')
-                    except UnicodeDecodeError as err:
-                        six.raise_from(
-                            MastodonMalformedEventError("Malformed UTF-8"),
-                            err
-                        )
-                    if line == '':
-                        self._dispatch(event)
-                        event = {}
+        try: 
+            for chunk in response.iter_content(chunk_size = 1):
+                if chunk:
+                    if chunk == b'\n':
+                        try:
+                            line = line_buffer.decode('utf-8')
+                        except UnicodeDecodeError as err:
+                            six.raise_from(
+                                MastodonMalformedEventError("Malformed UTF-8"),
+                                err
+                            )
+                        if line == '':
+                            self._dispatch(event)
+                            event = {}
+                        else:
+                            event = self._parse_line(line, event)
+                        line_buffer = bytearray()
                     else:
-                        event = self._parse_line(line, event)
-                    line_buffer = bytearray()
-                else:
-                    line_buffer.extend(chunk)
+                        line_buffer.extend(chunk)
+        except requests.exceptions.ChunkedEncodingError as e:
+            # Empirically, we get this exception when the server sends an empty
+            # message (incomplete read) after several hours of running. 
+            # This is tantamount to the connection terminating, so call on_close
+            # to allow clients to handle this case.
+            self.on_close()
         
     def _parse_line(self, line, event):
         if line.startswith(':'):
